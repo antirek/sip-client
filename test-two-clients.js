@@ -149,8 +149,6 @@ class SIPClientTest extends EventEmitter {
       this.emit('registered');
     } else if (message.includes('SIP/2.0 200 OK') && message.includes('INVITE')) {
       console.log(`✓ ${this.config.username} call answered`);
-      console.log(`[${this.config.username}] Full 200 OK message:`);
-      console.log(message);
       this.parseSDPFromResponse(message);
       this.emit('call-answered');
     } else if (message.includes('SIP/2.0 404 Not Found')) {
@@ -160,8 +158,11 @@ class SIPClientTest extends EventEmitter {
       // Handle incoming call
       console.log(`📞 ${this.config.username} received incoming call`);
       this.answerIncomingCall(message);
+    } else if (message.startsWith('v=0') && !message.includes('SIP/2.0')) {
+      // This is just SDP part, ignore
+      console.log(`[${this.config.username}] Received SDP part, ignoring`);
     } else {
-      console.log(`[${this.config.username}] Unhandled message: ${message.split('\r\n')[0]}`);
+      console.log(`[${this.config.username}] Unhandled message: ${message.substring(0, 50)}`);
     }
   }
 
