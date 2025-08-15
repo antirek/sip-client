@@ -204,6 +204,10 @@ class RegistrationManager {
     return reg ? reg.contact : null;
   }
   
+  getRegistrations() {
+    return this.registrations;
+  }
+  
   cleanup() {
     const now = Date.now();
     for (const [username, reg] of this.registrations) {
@@ -300,6 +304,11 @@ class SIPServer extends EventEmitter {
     this.registrationManager = new RegistrationManager();
     this.callManager = new CallManager();
     this.rtpProxyManager = new RTPProxyManager(this.serverIP);
+    
+    // Backward compatibility - expose registrations directly
+    Object.defineProperty(this, 'registrations', {
+      get: () => this.registrationManager.getRegistrations()
+    });
     
     // Network sockets
     this.sipSocket = null;
@@ -525,6 +534,48 @@ class SIPServer extends EventEmitter {
     this.sipSocket.send(buffer, port, host);
     console.log(`Sent to ${host}:${port}:`);
     console.log(message.substring(0, 200) + '...');
+  }
+
+  makeCall(from, to) {
+    console.log(`Making test call from ${from} to ${to}...`);
+    
+    if (!this.registrationManager.isRegistered(from)) {
+      console.log(`Extension ${from} is not registered`);
+      return;
+    }
+    
+    if (!this.registrationManager.isRegistered(to)) {
+      console.log(`Extension ${to} is not registered`);
+      return;
+    }
+    
+    const fromContact = this.registrationManager.getContact(from);
+    const fromInfo = SIPMessageParser.extractContact(fromContact);
+    
+    if (!fromInfo) {
+      console.log(`Could not get contact info for ${from}`);
+      return;
+    }
+    
+    // Create a test INVITE message
+    const callId = `${Math.random().toString(36).substring(2, 15)}@127.0.0.1`;
+    const branch = `z9hG4bK${Math.random().toString(36).substring(2, 15)}`;
+    const tag = Math.random().toString(36).substring(2, 8);
+    
+    const inviteMessage = `INVITE sip:${to}@127.0.0.1 SIP/2.0\r
+Via: SIP/2.0/UDP 127.0.0.1:${fromInfo.port};branch=${branch}\r
+From: <sip:${from}@127.0.0.1>;tag=${tag}\r
+To: <sip:${to}@127.0.0.1>\r
+Call-ID: ${callId}\r
+CSeq: 1 INVITE\r
+Contact: <sip:${from}@127.0.0.1:${fromInfo.port}>\r
+Content-Type: application/sdp\r
+Content-Length: 0\r
+\r
+`;
+
+    console.log(`Sending test INVITE from ${from} to ${to}`);
+    this.sendSIPMessage(inviteMessage, fromInfo.host, fromInfo.port);
   }
 
   stop() {
