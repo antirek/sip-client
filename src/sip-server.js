@@ -187,12 +187,14 @@ class RegistrationManager {
     this.registrations = new Map();
   }
   
-  register(username, contact) {
+  register(username, contact, expiresSeconds = 3600) {
+    console.log(`[RegistrationManager] Registering ${username} -> ${contact} (expires: ${expiresSeconds}s)`);
     this.registrations.set(username, {
       contact,
-      expires: Date.now() + 3600000 // 1 hour
+      expires: Date.now() + (expiresSeconds * 1000) // Convert seconds to milliseconds
     });
-    console.log(`✓ Registered ${username} -> ${contact}`);
+    console.log(`✓ Registered ${username} -> ${contact} (expires: ${expiresSeconds}s)`);
+    console.log(`[RegistrationManager] Current registrations:`, Array.from(this.registrations.entries()));
   }
   
   isRegistered(username) {
@@ -201,6 +203,7 @@ class RegistrationManager {
   
   getContact(username) {
     const reg = this.registrations.get(username);
+    console.log(`[RegistrationManager] Getting contact for ${username}:`, reg);
     return reg ? reg.contact : null;
   }
   
@@ -255,16 +258,33 @@ class SIPResponseBuilder {
     const callId = requestHeaders['Call-ID'];
     const cseq = requestHeaders['CSeq'];
     
-    return `SIP/2.0 200 OK\r
+    // Check if this is a REGISTER request
+    const isRegister = cseq && cseq.includes('REGISTER');
+    
+    let response = `SIP/2.0 200 OK\r
 Via: ${via}\r
 From: ${from}\r
 To: ${to}\r
 Call-ID: ${callId}\r
 CSeq: ${cseq}\r
-Contact: ${contact}\r
-Content-Length: 0\r
+`;
+    
+    if (isRegister) {
+      // For REGISTER, include Contact and Expires headers
+      response += `Contact: ${contact}\r
+Expires: 3600\r
+`;
+    } else {
+      // For other requests, include Contact header
+      response += `Contact: ${contact}\r
+`;
+    }
+    
+    response += `Content-Length: 0\r
 \r
 `;
+    
+    return response;
   }
   
   static create404NotFound(requestHeaders) {
@@ -376,9 +396,9 @@ class SIPServer extends EventEmitter {
     } else if (firstLine.startsWith('INVITE')) {
       this.handleInvite(headers, body, rinfo, message);
     } else if (firstLine.startsWith('ACK')) {
-      this.handleAck(headers, rinfo);
+      this.handleAck(headers, rinfo, message);
     } else if (firstLine.startsWith('BYE')) {
-      this.handleBye(headers, rinfo);
+      this.handleBye(headers, rinfo, message);
     } else if (firstLine.startsWith('SIP/2.0')) {
       this.handleSIPResponse(message, rinfo);
     } else {
@@ -392,7 +412,16 @@ class SIPServer extends EventEmitter {
     const username = SIPMessageParser.extractExtension(headers['To']);
     const contact = `<sip:${username}@${rinfo.address}:${rinfo.port}>`;
     
-    this.registrationManager.register(username, contact);
+    // Parse Expires header if present
+    let expires = 3600; // Default 1 hour
+    if (headers['Expires']) {
+      const expiresValue = parseInt(headers['Expires']);
+      if (!isNaN(expiresValue)) {
+        expires = expiresValue;
+      }
+    }
+    
+    this.registrationManager.register(username, contact, expires);
     
     const response = SIPResponseBuilder.create200OK(headers, contact);
     this.sendSIPMessage(response, rinfo.address, rinfo.port);
@@ -446,11 +475,16 @@ class SIPServer extends EventEmitter {
     const modifiedInvite = SDPHandler.updateContentLength(message, modifiedSDP);
     
     const targetContact = this.registrationManager.getContact(targetExtension);
+    console.log(`Target contact for ${targetExtension}: ${targetContact}`);
+    
     const targetInfo = SIPMessageParser.extractContact(targetContact);
+    console.log(`Extracted target info:`, targetInfo);
     
     if (targetInfo) {
       console.log(`Forwarding INVITE to ${targetInfo.host}:${targetInfo.port}`);
       this.sendSIPMessage(modifiedInvite, targetInfo.host, targetInfo.port);
+    } else {
+      console.log(`Failed to extract target info from contact: ${targetContact}`);
     }
   }
 
@@ -490,8 +524,9 @@ class SIPServer extends EventEmitter {
     }
   }
 
-  handleAck(headers, rinfo) {
+  handleAck(headers, rinfo, message) {
     console.log('Handling ACK request...');
+    console.log(`[ACK] Forwarding ACK from ${rinfo.address}:${rinfo.port}`);
     // Forward ACK to target
     const callId = SIPMessageParser.extractCallId(headers);
     const call = this.callManager.getCall(callId);
@@ -501,18 +536,25 @@ class SIPServer extends EventEmitter {
       const targetInfo = SIPMessageParser.extractContact(targetContact);
       
       if (targetInfo) {
+        console.log(`[ACK] Forwarding to ${targetInfo.host}:${targetInfo.port}`);
         this.sendSIPMessage(message, targetInfo.host, targetInfo.port);
+      } else {
+        console.log(`[ACK] Failed to extract target info for call ${callId}`);
       }
+    } else {
+      console.log(`[ACK] Call not found for Call-ID: ${callId}`);
     }
   }
 
-  handleBye(headers, rinfo) {
+  handleBye(headers, rinfo, message) {
     console.log('Handling BYE request...');
+    console.log(`[BYE] Processing BYE from ${rinfo.address}:${rinfo.port}`);
     
     const callId = SIPMessageParser.extractCallId(headers);
     const call = this.callManager.getCall(callId);
     
     if (call) {
+      console.log(`[BYE] Found call ${callId}, removing RTP proxy`);
       // Remove RTP proxy
       this.rtpProxyManager.removeProxy(callId);
       
@@ -521,11 +563,17 @@ class SIPServer extends EventEmitter {
       const targetInfo = SIPMessageParser.extractContact(targetContact);
       
       if (targetInfo) {
+        console.log(`[BYE] Forwarding to ${targetInfo.host}:${targetInfo.port}`);
         this.sendSIPMessage(message, targetInfo.host, targetInfo.port);
+      } else {
+        console.log(`[BYE] Failed to extract target info for call ${callId}`);
       }
       
       // Clean up call info
       this.callManager.removeCall(callId);
+      console.log(`[BYE] Call ${callId} cleaned up`);
+    } else {
+      console.log(`[BYE] Call not found for Call-ID: ${callId}`);
     }
   }
 
